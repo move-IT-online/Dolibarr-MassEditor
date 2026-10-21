@@ -136,17 +136,28 @@ if ($action == 'update_all') {
                     }
                 }
 
-                // 4. Kategorie zuweisen
-                if (isset($fields['categ_id'])) {
+                // 4. Kategorie zuweisen (Hinzufügen)
+                if (isset($fields['categ_id']) && (int)$fields['categ_id'] > 0) {
                     $new_categ_id = (int)$fields['categ_id'];
-                    if ($new_categ_id > 0) {
-                        $categ = new Categorie($db);
-                        if ($categ->fetch($new_categ_id) > 0) {
-                            $res_cat = $categ->add_type($productstatic, 'product');
-                            if ($res_cat < 0 && $res_cat != -2) {
-                                $error++;
-                                $error_messages[] = "Kategoriezuweisung fehlgeschlagen für Ref '" . $productstatic->ref . "'";
-                            }
+                    $categ = new Categorie($db);
+                    if ($categ->fetch($new_categ_id) > 0) {
+                        $res_cat = $categ->add_type($productstatic, 'product');
+                        if ($res_cat < 0 && $res_cat != -2) {
+                            $error++;
+                            $error_messages[] = "Kategoriezuweisung fehlgeschlagen für Ref '" . $productstatic->ref . "'";
+                        }
+                    }
+                }
+
+                // 5. Kategorie entfernen
+                if (isset($fields['remove_categ_id']) && (int)$fields['remove_categ_id'] > 0) {
+                    $remove_categ_id = (int)$fields['remove_categ_id'];
+                    $categ_rem = new Categorie($db);
+                    if ($categ_rem->fetch($remove_categ_id) > 0) {
+                        $res_rem = $categ_rem->del_type($productstatic, 'product');
+                        if ($res_rem < 0) {
+                            $error++;
+                            $error_messages[] = "Kategorieentfernung fehlgeschlagen für Ref '" . $productstatic->ref . "'";
                         }
                     }
                 }
@@ -168,7 +179,15 @@ if ($action == 'update_all') {
 $categ_static = new Categorie($db);
 $categories_list = $categ_static->get_full_arbo('product');
 
-llxHeader('', 'Produkt-Massenbearbeitung');
+// CSS: Linke Spalte komplett ausblenden für volle Seitenbreite
+$morejs = array();
+$morecss = array();
+$morehead = '<style type="text/css">
+    div#id-left, td.vmenu, .side-nav, .left-sidebar { display: none !important; }
+    div#id-right, .fiche, .main-content, div.fichecenter { width: 100% !important; margin-left: 0 !important; padding-left: 0 !important; max-width: 100% !important; }
+</style>';
+
+llxHeader($morehead, 'Produkt-Massenbearbeitung', '', '', 0, 0, $morejs, $morecss, '', 1);
 
 print load_fiche_titre('Massenbearbeitung von Produkten', '', 'title_products');
 
@@ -198,31 +217,41 @@ $param = '&limit=' . urlencode($limit);
 if (!empty($search_ref)) $param .= '&search_ref=' . urlencode($search_ref);
 if (!empty($search_label)) $param .= '&search_label=' . urlencode($search_label);
 
-// 1. SUCH- & FILTER-LEISTE (GET-Formular)
+// 1. SUCH- & FILTER-LEISTE
 print '<form method="GET" action="' . $_SERVER["PHP_SELF"] . '">';
-print '<input type="hidden" name="page" value="0">'; // Beim Neufiltern/Ändern des Limits immer auf Seite 1 springen
-print '<table class="noborder" style="width: 100%; margin-bottom: 15px;">';
-print '<tr class="liste_titre">';
-print '<td>Referenz-Suche: <input type="text" class="flat" name="search_ref" value="' . dol_escape_htmltag($search_ref) . '"></td>';
-print '<td>Bezeichnung-Suche: <input type="text" class="flat" name="search_label" value="' . dol_escape_htmltag($search_label) . '"></td>';
-print '<td>Einträge pro Seite: ';
+print '<input type="hidden" name="page" value="0">';
+print '<div class="div-table-responsive-no-min" style="margin-bottom: 15px; background: #f8f9fa; padding: 12px 15px; border: 1px solid #e0e0e0; border-radius: 4px;">';
+print '<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 20px; justify-content: space-between;">';
+
+print '<div style="display: flex; align-items: center; gap: 10px;">';
+print '<strong>Referenz:</strong> <input type="text" class="flat width150" name="search_ref" value="' . dol_escape_htmltag($search_ref) . '" placeholder="z. B. ART-100">';
+print '</div>';
+
+print '<div style="display: flex; align-items: center; gap: 10px;">';
+print '<strong>Bezeichnung:</strong> <input type="text" class="flat width200" name="search_label" value="' . dol_escape_htmltag($search_label) . '" placeholder="Suchbegriff...">';
+print '</div>';
+
+print '<div style="display: flex; align-items: center; gap: 10px;">';
+print '<strong>Pro Seite:</strong> ';
 print '<select name="limit" class="flat" onchange="this.form.submit();">';
 foreach (array(10, 25, 50, 100, 250) as $val) {
     print '<option value="' . $val . '"' . ($limit == $val ? ' selected' : '') . '>' . $val . '</option>';
 }
 print '</select>';
-print '</td>';
-print '<td style="text-align: right;">';
-print '<input type="submit" class="button" value="Suchen / Filtern"> ';
+print '</div>';
+
+print '<div>';
+print '<input type="submit" class="button" value="Filtern"> ';
 if (!empty($search_ref) || !empty($search_label)) {
     print '<a href="' . $_SERVER["PHP_SELF"] . '" class="button button-reset">Zurücksetzen</a>';
 }
-print '</td>';
-print '</tr>';
-print '</table>';
+print '</div>';
+
+print '</div>';
+print '</div>';
 print '</form>';
 
-// Standard-Dolibarr-Blätterleiste (Nutzt $param mit $limit und rendert die Blätterpfeile fehlerfrei)
+// Standard-Dolibarr-Blätterleiste
 print_barre_liste('Produkte', $page, $_SERVER["PHP_SELF"], $param, $sortfield, $sortorder, '', $nbtotalofrecords, $nbtotalofrecords, 'title_products', 0, '', '', $limit);
 
 // 2. BEARBEITUNGS- & SPEICHER-FORMULAR (POST)
@@ -242,8 +271,7 @@ print_liste_field_titre('Verkaufspreis (Netto)', $_SERVER["PHP_SELF"], 'p.price'
 print_liste_field_titre('Aktueller Lagerbestand', $_SERVER["PHP_SELF"], 'p.stock', '', $param, '', $sortfield, $sortorder);
 print '<th>Neuer Lagerbestand</th>';
 print_liste_field_titre('Online-Shop', $_SERVER["PHP_SELF"], 'ef.onlineshop', '', $param, 'style="text-align: center;"', $sortfield, $sortorder);
-print '<th>Aktuelle Kategorien</th>';
-print '<th>Kategorie hinzufügen</th>';
+print '<th>Kategorie verwalten (Hinzufügen / Entfernen)</th>';
 
 print '</tr>';
 
@@ -259,15 +287,15 @@ if ($resql) {
     while ($i < $num) {
         $obj = $db->fetch_object($resql);
         
-        // Aktuelle Kategorien des Produkts abfragen
+        // Aktuelle Kategorien des Produkts abfragen (inkl. ID für das Dropdown zum Entfernen)
         $categs_assigned = array();
-        $sql_cat = "SELECT c.label FROM " . MAIN_DB_PREFIX . "categorie as c ";
+        $sql_cat = "SELECT c.rowid, c.label FROM " . MAIN_DB_PREFIX . "categorie as c ";
         $sql_cat .= " INNER JOIN " . MAIN_DB_PREFIX . "categorie_product as cp ON cp.fk_categorie = c.rowid ";
         $sql_cat .= " WHERE cp.fk_product = " . (int)$obj->rowid;
         $resql_cat = $db->query($sql_cat);
         if ($resql_cat) {
             while ($obj_cat = $db->fetch_object($resql_cat)) {
-                $categs_assigned[] = dol_escape_htmltag($obj_cat->label);
+                $categs_assigned[] = array('id' => $obj_cat->rowid, 'label' => dol_escape_htmltag($obj_cat->label));
             }
         }
         
@@ -281,27 +309,44 @@ if ($resql) {
         $checked = (!empty($obj->onlineshop) && (string)$obj->onlineshop === '2') ? ' checked' : '';
         print '<td style="text-align: center;"><input type="checkbox" name="prod[' . $obj->rowid . '][onlineshop]" value="2"' . $checked . '></td>';
 
-        // Anzeige der zugewiesenen Kategorien als Badges
+        // Kategorie-Verwaltung (Aktuelle Badges + Dropdowns zum Hinzufügen und Entfernen)
         print '<td>';
+        
+        // 1. Aktuelle Badges anzeigen
+        print '<div style="margin-bottom: 5px;">';
         if (!empty($categs_assigned)) {
-            foreach ($categs_assigned as $c_label) {
-                print '<span class="badge badge-status4 badge-status" style="margin-right: 3px; display: inline-block; margin-bottom: 2px;">' . $c_label . '</span>';
+            foreach ($categs_assigned as $cat_item) {
+                print '<span class="badge badge-status4 badge-status" style="margin-right: 3px; display: inline-block; margin-bottom: 2px;">' . $cat_item['label'] . '</span>';
             }
         } else {
-            print '<span class="opacitymedium" style="font-size: 0.9em; italic;">Keine</span>';
+            print '<span class="opacitymedium" style="font-size: 0.9em;">Keine Kategorien</span>';
         }
-        print '</td>';
+        print '</div>';
 
-        // Auswahl für neue Kategorie
-        print '<td>';
-        print '<select name="prod[' . $obj->rowid . '][categ_id]" class="flat">';
-        print '<option value="0">-- Kategorie wählen --</option>';
+        // 2. Dropdown zum Hinzufügen
+        print '<div style="margin-bottom: 3px;">';
+        print '<select name="prod[' . $obj->rowid . '][categ_id]" class="flat" style="width: 100%; max-width: 250px;">';
+        print '<option value="0">+ Kategorie hinzufügen...</option>';
         if (!empty($categories_list) && is_array($categories_list)) {
             foreach ($categories_list as $cat) {
                 print '<option value="' . $cat['id'] . '">' . dol_escape_htmltag($cat['fulllabel']) . '</option>';
             }
         }
         print '</select>';
+        print '</div>';
+
+        // 3. Dropdown zum Entfernen (nur wenn der Artikel in Kategorien ist)
+        if (!empty($categs_assigned)) {
+            print '<div>';
+            print '<select name="prod[' . $obj->rowid . '][remove_categ_id]" class="flat" style="width: 100%; max-width: 250px; color: #c00;">';
+            print '<option value="0">- Kategorie entfernen...</option>';
+            foreach ($categs_assigned as $cat_item) {
+                print '<option value="' . $cat_item['id'] . '">' . $cat_item['label'] . '</option>';
+            }
+            print '</select>';
+            print '</div>';
+        }
+
         print '</td>';
 
         print '</tr>';
