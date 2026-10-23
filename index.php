@@ -34,6 +34,7 @@ if ($res_check_menu && $db->num_rows($res_check_menu) == 0) {
 $action = GETPOST('action', 'aZ09');
 $search_ref = GETPOST('search_ref', 'alpha');
 $search_label = GETPOST('search_label', 'alpha');
+$search_warehouse_id = GETPOST('search_warehouse_id', 'int');
 
 // Sortierung & Paginierung
 $sortfield = GETPOST('sortfield', 'aZ09') ? GETPOST('sortfield', 'aZ09') : 'p.ref';
@@ -48,11 +49,38 @@ $allowed_sortfields = array(
     'p.ref' => 'p.ref',
     'p.label' => 'p.label',
     'p.price' => 'p.price',
-    'p.stock' => 'p.stock',
     'ef.onlineshop' => 'ef.onlineshop'
 );
 if (!array_key_exists($sortfield, $allowed_sortfields)) {
     $sortfield = 'p.ref';
+}
+
+// Lager absolut fehlertolerant ermitteln (SELECT *)
+$warehouses_list = array();
+$sql_wh_list = "SELECT * FROM " . MAIN_DB_PREFIX . "entrepot ORDER BY rowid ASC";
+$res_wh_list = $db->query($sql_wh_list);
+if ($res_wh_list) {
+    while ($obj_wh_item = $db->fetch_object($res_wh_list)) {
+        $wh_id = $obj_wh_item->rowid;
+        $wh_ref = isset($obj_wh_item->ref) ? $obj_wh_item->ref : 'Lager ' . $wh_id;
+        
+        $wh_name = '';
+        if (!empty($obj_wh_item->label)) {
+            $wh_name = $obj_wh_item->label;
+        } elseif (!empty($obj_wh_item->libelle)) {
+            $wh_name = $obj_wh_item->libelle;
+        } else {
+            $wh_name = $wh_ref;
+        }
+        
+        $warehouses_list[$wh_id] = $wh_ref . ' (' . $wh_name . ')';
+    }
+}
+
+// Wenn kein Lager ausgewählt wurde, das erste verfügbare Lager als Standard vorauswählen
+if (empty($search_warehouse_id) && !empty($warehouses_list)) {
+    reset($warehouses_list);
+    $search_warehouse_id = key($warehouses_list);
 }
 
 // Extrafields laden
@@ -98,41 +126,35 @@ if ($action == 'update_all') {
                     $error_messages[] = "Fehler beim Update von Ref '" . $productstatic->ref . "': " . $err_details;
                 }
 
-                // 3. Lagerbestand anpassen
+                // 3. Lagerbestand für das ausgewählte Lager anpassen
                 if (!empty($conf->stock->enabled) && isset($fields['stock_target']) && $fields['stock_target'] !== '') {
                     $target_stock = price2num($fields['stock_target']);
-                    $productstatic->load_stock();
-                    $current_stock = $productstatic->stock_reel;
-
-                    if ($target_stock != $current_stock) {
-                        $diff = $target_stock - $current_stock;
+                    
+                    if ($search_warehouse_id > 0) {
+                        $sql_check_ps = "SELECT rowid, reel FROM " . MAIN_DB_PREFIX . "product_stock WHERE fk_product = " . (int)$id . " AND fk_entrepot = " . (int)$search_warehouse_id;
+                        $res_check_ps = $db->query($sql_check_ps);
                         
-                        $fk_warehouse = !empty($productstatic->fk_default_warehouse) ? $productstatic->fk_default_warehouse : 0;
-                        if (empty($fk_warehouse)) {
-                            $sql_wh = "SELECT rowid FROM " . MAIN_DB_PREFIX . "entrepot WHERE entity IN (" . getEntity('stock') . ") AND statut = 1 LIMIT 1";
-                            $res_wh = $db->query($sql_wh);
-                            if ($res_wh && $db->num_rows($res_wh) > 0) {
-                                $obj_wh = $db->fetch_object($res_wh);
-                                $fk_warehouse = $obj_wh->rowid;
-                            }
-                        }
-
-                        if ($fk_warehouse > 0) {
-                            $res_stock = $productstatic->correct_stock(
-                                $user,
-                                $fk_warehouse,
-                                abs($diff),
-                                ($diff > 0 ? 0 : 1),
-                                'Massenbearbeitung Bestandsanpassung'
-                            );
-                            if ($res_stock < 0) {
-                                $error++;
-                                $error_messages[] = "Lagerkorrektur fehlgeschlagen für Ref '" . $productstatic->ref . "': " . $productstatic->error;
+                        if ($res_check_ps && $db->num_rows($res_check_ps) > 0) {
+                            $obj_ps = $db->fetch_object($res_check_ps);
+                            if ($obj_ps->reel != $target_stock) {
+                                $sql_up_ps = "UPDATE " . MAIN_DB_PREFIX . "product_stock SET reel = " . (float)$target_stock . " WHERE rowid = " . (int)$obj_ps->rowid;
+                                $res_up_ps = $db->query($sql_up_ps);
+                                if (!$res_up_ps) {
+                                    $error++;
+                                    $error_messages[] = "Lager-Update fehlgeschlagen für Ref '" . $productstatic->ref . "'";
+                                }
                             }
                         } else {
-                            $error++;
-                            $error_messages[] = "Kein aktives Lager gefunden für Bestandsanpassung von Ref '" . $productstatic->ref . "'";
+                            $sql_ins_ps = "INSERT INTO " . MAIN_DB_PREFIX . "product_stock (fk_product, fk_entrepot, reel) VALUES (" . (int)$id . ", " . (int)$search_warehouse_id . ", " . (float)$target_stock . ")";
+                            $res_ins_ps = $db->query($sql_ins_ps);
+                            if (!$res_ins_ps) {
+                                $error++;
+                                $error_messages[] = "Lager-Erstellung fehlgeschlagen für Ref '" . $productstatic->ref . "'";
+                            }
                         }
+                    } else {
+                        $error++;
+                        $error_messages[] = "Kein Lager ausgewählt für Bestandsanpassung von Ref '" . $productstatic->ref . "'";
                     }
                 }
 
@@ -212,16 +234,29 @@ if ($resql_count) {
     $nbtotalofrecords = $obj_count->total;
 }
 
-// URL-Parameter für Paginierungs-Links sichern (inkl. Limit)
-$param = '&limit=' . urlencode($limit);
+// URL-Parameter für Paginierungs-Links sichern (inkl. Limit & gewähltes Lager)
+$param = '&limit=' . urlencode($limit) . '&search_warehouse_id=' . urlencode($search_warehouse_id);
 if (!empty($search_ref)) $param .= '&search_ref=' . urlencode($search_ref);
 if (!empty($search_label)) $param .= '&search_label=' . urlencode($search_label);
 
-// 1. SUCH- & FILTER-LEISTE
+// 1. SUCH- & FILTER-LEISTE (inkl. Lager-Auswahl)
 print '<form method="GET" action="' . $_SERVER["PHP_SELF"] . '">';
 print '<input type="hidden" name="page" value="0">';
 print '<div class="div-table-responsive-no-min" style="margin-bottom: 15px; background: #f8f9fa; padding: 12px 15px; border: 1px solid #e0e0e0; border-radius: 4px;">';
 print '<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 20px; justify-content: space-between;">';
+
+print '<div style="display: flex; align-items: center; gap: 10px;">';
+print '<strong>Lager:</strong> ';
+print '<select name="search_warehouse_id" class="flat" onchange="this.form.submit();">';
+if (!empty($warehouses_list)) {
+    foreach ($warehouses_list as $wh_id => $wh_label) {
+        print '<option value="' . $wh_id . '"' . ($search_warehouse_id == $wh_id ? ' selected' : '') . '>' . dol_escape_htmltag($wh_label) . '</option>';
+    }
+} else {
+    print '<option value="0">Keine Lager gefunden</option>';
+}
+print '</select>';
+print '</div>';
 
 print '<div style="display: flex; align-items: center; gap: 10px;">';
 print '<strong>Referenz:</strong> <input type="text" class="flat width150" name="search_ref" value="' . dol_escape_htmltag($search_ref) . '" placeholder="z. B. ART-100">';
@@ -268,15 +303,18 @@ print '<tr class="liste_titre">';
 print_liste_field_titre('Referenz', $_SERVER["PHP_SELF"], 'p.ref', '', $param, '', $sortfield, $sortorder);
 print_liste_field_titre('Bezeichnung', $_SERVER["PHP_SELF"], 'p.label', '', $param, '', $sortfield, $sortorder);
 print_liste_field_titre('Verkaufspreis (Netto)', $_SERVER["PHP_SELF"], 'p.price', '', $param, '', $sortfield, $sortorder);
-print_liste_field_titre('Aktueller Lagerbestand', $_SERVER["PHP_SELF"], 'p.stock', '', $param, '', $sortfield, $sortorder);
+print '<th>Aktueller Lagerbestand</th>';
 print '<th>Neuer Lagerbestand</th>';
 print_liste_field_titre('Online-Shop', $_SERVER["PHP_SELF"], 'ef.onlineshop', '', $param, 'style="text-align: center;"', $sortfield, $sortorder);
 print '<th>Kategorie verwalten (Hinzufügen / Entfernen)</th>';
 
 print '</tr>';
 
-// Daten abfragen mit Sortierung & Limit
-$sql = "SELECT p.rowid, p.ref, p.label, p.price, p.stock, ef.onlineshop" . $sql_where;
+// Daten abfragen mit Sortierung & Limit (inklusive Live-Bestand aus dem gewählten Lager)
+$sql = "SELECT p.rowid, p.ref, p.label, p.price, ef.onlineshop, ps.reel as stock_reel" . $sql_where;
+if ($search_warehouse_id > 0) {
+    $sql = str_replace("FROM " . MAIN_DB_PREFIX . "product as p", "FROM " . MAIN_DB_PREFIX . "product as p LEFT JOIN " . MAIN_DB_PREFIX . "product_stock as ps ON ps.fk_product = p.rowid AND ps.fk_entrepot = " . (int)$search_warehouse_id, $sql);
+}
 $sql .= " ORDER BY " . $sortfield . " " . $sortorder;
 $sql .= " LIMIT " . (int)$offset . ", " . (int)$limit;
 
@@ -287,7 +325,9 @@ if ($resql) {
     while ($i < $num) {
         $obj = $db->fetch_object($resql);
         
-        // Aktuelle Kategorien des Produkts abfragen (inkl. ID für das Dropdown zum Entfernen)
+        $warehouse_stock = isset($obj->stock_reel) ? $obj->stock_reel : 0;
+
+        // Aktuelle Kategorien des Produkts abfragen
         $categs_assigned = array();
         $sql_cat = "SELECT c.rowid, c.label FROM " . MAIN_DB_PREFIX . "categorie as c ";
         $sql_cat .= " INNER JOIN " . MAIN_DB_PREFIX . "categorie_product as cp ON cp.fk_categorie = c.rowid ";
@@ -303,16 +343,15 @@ if ($resql) {
         print '<td><a href="' . DOL_URL_ROOT . '/product/card.php?id=' . $obj->rowid . '" target="_blank">' . dol_escape_htmltag($obj->ref) . '</a></td>';
         print '<td><input type="text" class="flat minwidth200" name="prod[' . $obj->rowid . '][label]" value="' . dol_escape_htmltag($obj->label) . '"></td>';
         print '<td><input type="text" class="flat width80" name="prod[' . $obj->rowid . '][price]" value="' . price($obj->price) . '"> €</td>';
-        print '<td>' . ($obj->stock !== null ? $obj->stock : '0') . '</td>';
-        print '<td><input type="text" class="flat width80" name="prod[' . $obj->rowid . '][stock_target]" value="' . ($obj->stock !== null ? $obj->stock : '0') . '"></td>';
+        print '<td>' . $warehouse_stock . '</td>';
+        print '<td><input type="text" class="flat width80" name="prod[' . $obj->rowid . '][stock_target]" value="' . $warehouse_stock . '"></td>';
         
         $checked = (!empty($obj->onlineshop) && (string)$obj->onlineshop === '2') ? ' checked' : '';
         print '<td style="text-align: center;"><input type="checkbox" name="prod[' . $obj->rowid . '][onlineshop]" value="2"' . $checked . '></td>';
 
-        // Kategorie-Verwaltung (Aktuelle Badges + Dropdowns zum Hinzufügen und Entfernen)
+        // Kategorie-Verwaltung
         print '<td>';
         
-        // 1. Aktuelle Badges anzeigen
         print '<div style="margin-bottom: 5px;">';
         if (!empty($categs_assigned)) {
             foreach ($categs_assigned as $cat_item) {
@@ -323,7 +362,6 @@ if ($resql) {
         }
         print '</div>';
 
-        // 2. Dropdown zum Hinzufügen
         print '<div style="margin-bottom: 3px;">';
         print '<select name="prod[' . $obj->rowid . '][categ_id]" class="flat" style="width: 100%; max-width: 250px;">';
         print '<option value="0">+ Kategorie hinzufügen...</option>';
@@ -335,7 +373,6 @@ if ($resql) {
         print '</select>';
         print '</div>';
 
-        // 3. Dropdown zum Entfernen (nur wenn der Artikel in Kategorien ist)
         if (!empty($categs_assigned)) {
             print '<div>';
             print '<select name="prod[' . $obj->rowid . '][remove_categ_id]" class="flat" style="width: 100%; max-width: 250px; color: #c00;">';
